@@ -104,21 +104,15 @@ func (s *TelegramService) HandleMessage(ctx context.Context, chatID int64, text 
 		Content: text,
 	})
 
-	// Check if user wants to see properties immediately
-	lowerText := strings.ToLower(text)
-	wantsToSee := strings.Contains(lowerText, "وريني") || strings.Contains(lowerText, "اريني") ||
-		strings.Contains(lowerText, "ابغى اشوف") || strings.Contains(lowerText, "أبغى أشوف") ||
-		strings.Contains(lowerText, "عطني") || strings.Contains(lowerText, "اعطني") ||
-		strings.Contains(lowerText, "شوف") || strings.Contains(lowerText, "شوفي") ||
-		strings.Contains(lowerText, "عقارات") || strings.Contains(lowerText, "بيوت") ||
-		strings.Contains(lowerText, "عندكم") || strings.Contains(lowerText, "ابي") ||
-		strings.Contains(lowerText, "أبي") || strings.Contains(lowerText, "ابغى") ||
-		strings.Contains(lowerText, "أبغى") || strings.Contains(lowerText, "حاب") ||
-		strings.Contains(lowerText, "محتاج") || strings.Contains(lowerText, "دور") ||
-		strings.Contains(lowerText, "ابحث")
+	// Check if user explicitly wants to see properties
+	wantsToSee := strings.Contains(text, "وريني") || strings.Contains(text, "اريني") ||
+		strings.Contains(text, "ابغى اشوف") || strings.Contains(text, "أبغى أشوف") ||
+		strings.Contains(text, "عطني") || strings.Contains(text, "اعطني") ||
+		strings.Contains(text, "أعطني") || strings.Contains(text, "شوف") ||
+		strings.Contains(text, "عقارات") || strings.Contains(text, "بيوت")
 
 	if wantsToSee && (session.State == StateWelcome || session.State == StateExtracting) {
-		// Force show properties
+		// Force show properties only if we have minimum data
 		go s.forceShowProperties(session, chatID)
 		return "⏳ جاري البحث عن أفضل العقارات لك... 🔍", nil
 	}
@@ -131,6 +125,25 @@ func (s *TelegramService) HandleMessage(ctx context.Context, chatID int64, text 
 }
 
 func (s *TelegramService) forceShowProperties(session *UserSession, chatID int64) {
+	// Only show if we have minimum data
+	if session.Lead.City == "" || session.Lead.Budget <= 0 {
+		// Ask for missing info
+		var msg string
+		if session.Lead.City == "" && session.Lead.Budget <= 0 {
+			msg = "بالتأكيد! بس ابغى أعرف:\n1. في أي مدينة تبحث؟\n2. ميزانيتك التقريبية؟"
+		} else if session.Lead.City == "" {
+			msg = "بالتأكيد! في أي مدينة تبحث؟"
+		} else {
+			msg = "بالتأكيد! وش ميزانيتك التقريبية؟"
+		}
+		_ = s.ChatRepo.Create(&models.ChatMessage{
+			LeadID:  session.Lead.ID,
+			Role:    "assistant",
+			Content: msg,
+		})
+		_ = s.SendTelegramMessage(chatID, msg)
+		return
+	}
 	reply, err := s.handleMatching(context.Background(), session)
 	if err == nil && reply != "" {
 		_ = s.ChatRepo.Create(&models.ChatMessage{
@@ -174,17 +187,18 @@ func (s *TelegramService) processMessageAsync(session *UserSession, chatID int64
 }
 
 func (s *TelegramService) handleWelcome(ctx context.Context, session *UserSession, text string) (string, error) {
-	prompt := `أنت مستشار عقاري محترف. تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق للعميل، ليس روبوت.
+	prompt := `أنت ترد على رسالة في واتساب/تليجرام. تحدث بالعربية الفصحى المهذبة كأنك إنسان طبيعي، ليس مسوق.
 
 قواعد مهمة:
-- إذا سأل سؤال مباشر (هل عندكم...؟ كم سعر...؟) أجب عليه مباشرة وباختصار أولاً
-- إذا قال يريد يشوف عقارات، قول له "بالتأكيد! جاري البحث عن أفضل العقارات لك"
-- لا تسأل أسئلة كثيرة، اسأل سؤال واحد فقط
-- لا تطلب رقم الهاتف في البداية
-- لا تذكر اسمك أو اسم الشركة إلا إذا ضروري جداً
-- كن طبيعياً وودوداً
+- رد ببساطة واختصار. لا تطول ولا تكتب فقرات.
+- لا تستخدم كلمات مثل: "رحلة البحث" "عقارك المثالي" "يسعدني جداً" "خدمتك" "رحلة" "مثالي"
+- لا تذكر اسمك أو اسم الشركة.
+- إذا قال "سلام" أو "أهلاً" → رد: "وعليكم السلام! كيف أقدر أساعدك؟"
+- إذا قال "عندكم بيوت" → رد: "نعم. في أي مدينة؟"
+- إذا قال "ابغى شقة" → رد: "بالتأكيد. في أي مدينة وميزانية كم؟"
+- اسأل سؤال واحد فقط.
 
-رد بجملتين أو ثلاث كحد أقصى.`
+رد بجملة أو جملتين كحد أقصى. تحدث كأنك شخص طبيعي.`
 
 	messages := append(session.Messages, ai.Message{Role: "user", Content: text})
 	resp, err := s.AI.Chat(ctx, append([]ai.Message{{Role: "system", Content: prompt}}, messages...))
@@ -349,7 +363,7 @@ func (s *TelegramService) handleFollowup(ctx context.Context, session *UserSessi
 }
 
 func (s *TelegramService) fallbackWelcome() string {
-	return "أهلاً وسهلاً بك! 🏡\n\nأخبرني في أي مدينة تبحث وما نوع العقار اللي يهمك، وأنا أساعدك بكل سرور."
+	return "وعليكم السلام! كيف أقدر أساعدك اليوم؟"
 }
 
 type extractedData struct {
@@ -362,20 +376,25 @@ type extractedData struct {
 }
 
 func (s *TelegramService) parseExtraction(raw string) extractedData {
-	re := regexp.MustCompile(`(?s)\{.*\}`)
-	match := re.FindString(raw)
-	if match == "" {
-		return extractedData{}
-	}
-	var data extractedData
-	_ = json.Unmarshal([]byte(match), &data)
+	re := regexp.MustCompile(`\{[^{}]*\}`)
+	matches := re.FindAllString(raw, -1)
 
-	arabicNums := map[string]string{
-		"٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
-		"٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
+	for _, match := range matches {
+		var data extractedData
+		if err := json.Unmarshal([]byte(match), &data); err == nil {
+			// Validate: complete=true only if city has value AND budget > 0
+			if data.Complete && (data.City == "" || data.Budget <= 0) {
+				data.Complete = false
+			}
+			return data
+		}
 	}
-	for ar, en := range arabicNums {
-		data.Phone = strings.ReplaceAll(data.Phone, ar, en)
+
+	// Fallback: try to parse the entire response as JSON
+	var data extractedData
+	json.Unmarshal([]byte(raw), &data)
+	if data.Complete && (data.City == "" || data.Budget <= 0) {
+		data.Complete = false
 	}
 
 	return data
