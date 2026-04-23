@@ -143,15 +143,18 @@ func (s *TelegramService) processMessageAsync(session *UserSession, chatID int64
 }
 
 func (s *TelegramService) handleWelcome(ctx context.Context, session *UserSession, text string) (string, error) {
-	prompt := `أنت مندوب مبيعات محترف في شركة عقارات فاخرة. تحدث باللهجة العربية الفصحى المهذبة.
-رحب بالعميل واسأله عن:
-1. المدينة التي يبحث فيها
-2. ميزانيته
-3. نوع العقار (شقة، فيلا، تجاري)
-4. مدة الشراء المتوقعة
-5. رقم الهاتف
+	prompt := `أنت مستشار عقاري محترف في شركة كينز العقارية. اسمك "عمر". تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق للعميل، ليس روبوت.
 
-رد بجملة قصيرة ومهذبة فقط (لا تتجاوز 3 أسطر).`
+قواعد مهمة:
+- إذا سأل سؤال مباشر (هل عندكم...؟ كم سعر...؟) أجب عليه مباشرة وباختصار أولاً
+- ثم اسأل سؤال واحد فقط (لا تطلب كل المعلومات دفعة واحدة)
+- لا تطلب رقم الهاتف في الرسالة الأولى أبداً
+- كن طبيعياً وودوداً، استخدم تعبيرات مثل "بالتأكيد" "عظيم" " delighted"
+- اذكر اسم الشركة "كينز العقارية" بشكل طبيعي
+
+مثال: إذا قال "عندكم بيوت في الرياض؟" رد: "نعم بالتأكيد! لدينا تشكيلة ممتازة في الرياض. هل تفضل فيلا أم شقة؟"
+
+رد بجملتين أو ثلاث كحد أقصى.`
 
 	messages := append(session.Messages, ai.Message{Role: "user", Content: text})
 	resp, err := s.AI.Chat(ctx, append([]ai.Message{{Role: "system", Content: prompt}}, messages...))
@@ -178,7 +181,7 @@ complete=true فقط إذا امتلكت city, budget, property_type, phone.
 
 	resp, err := s.AI.Chat(ctx, []ai.Message{{Role: "user", Content: prompt}})
 	if err != nil {
-		return "شكراً! هل يمكنك إعطائي المزيد من التفاصيل؟", nil
+		return "عذراً، حدث خطأ فني. لكن لا تقلق، أنا هنا! هل يمكنك إعطائي ميزانيتك التقريبية ونوع العقار اللي تبحث عنه؟", nil
 	}
 
 	extracted := s.parseExtraction(resp)
@@ -205,9 +208,16 @@ complete=true فقط إذا امتلكت city, budget, property_type, phone.
 		return s.handleScoring(ctx, session)
 	}
 
-	followUpPrompt := `أنت مندوب مبيعات. العميل لم يعطِ كل البيانات. اطلب البيانات الناقصة فقط بأدب.
-البيانات الموجودة: مدينة=` + session.Lead.City + `, ميزانية=` + fmt.Sprintf("%.0f", session.Lead.Budget) + `, نوع=` + session.Lead.PropertyType + `, هاتف=` + session.Lead.Phone + `
-رد بجملة قصيرة (سطرين كحد أقصى).`
+	followUpPrompt := `أنت عمر، مستشار عقاري في كينز العقارية. تحدث بالعربية الفصحى المهذبة والودودة.
+
+المحادثة حتى الآن:
+- المدينة: ` + session.Lead.City + `
+- الميزانية: ` + fmt.Sprintf("%.0f", session.Lead.Budget) + `
+- نوع العقار: ` + session.Lead.PropertyType + `
+- التوقيت: ` + session.Lead.Timeline + `
+
+رد بأسلوب طبيعي وودود. لا تكرر ما يعرفه العميل بالفعل. اسأل عن المعلومات الناقصة فقط بأسلوب محادثة (مثل "عظيم! في أي نطاق ميزانية تبحث؟" أو "ممتاز! متى تخطط للشراء تقريباً؟").
+لا تذكر أنك تحلل بيانات. رد بجملة واحدة أو جملتين.`
 
 	followUp, _ := s.AI.Chat(ctx, []ai.Message{{Role: "user", Content: followUpPrompt}})
 	if followUp == "" {
@@ -235,7 +245,7 @@ tag واحد من: "Serious", "Urgent", "Curious", "Investor"
 
 	resp, err := s.AI.Chat(ctx, []ai.Message{{Role: "user", Content: prompt}})
 	if err != nil {
-		session.Lead.Score = 50
+		session.Lead.Score = 60
 		session.Lead.Tag = "Curious"
 	} else {
 		score, tag := s.parseScoring(resp)
@@ -255,28 +265,48 @@ func (s *TelegramService) handleMatching(ctx context.Context, session *UserSessi
 	}
 
 	if len(props) == 0 {
-		reply := fmt.Sprintf("لم أجد عقارات في %s ضمن ميزانية %.0f$. هل ترغب برفع الميزانية أو تغيير المدينة؟", session.Lead.City, session.Lead.Budget)
+		reply := fmt.Sprintf("🤔 حالياً ما عندنا عقار متاح في %s ضمن ميزانية %.0f$\n\nلكن عندنا خيارات رائعة قريبة:\n• نفس المدينة بميزانية أعلى\n• مدن مجاورة بأسعار منافسة\n• عقارات بالتقسيط المريح\n\nهل تبي نبحث لك بميزانية مختلفة أو مدينة ثانية؟ 🏘️", session.Lead.City, session.Lead.Budget)
 		session.State = StateFollowup
 		return reply, nil
 	}
 
-	best := props[0]
-	reply := fmt.Sprintf("وجدت %d عقاراً في %s يطابق ميزانيتك %.0f$. \n\n🏆 الأفضل:\n%s\n💰 السعر: %.0f$\n🛏️ غرف: %d | 🛁 حمامات: %d\n📐 المساحة: %.0f م²\n\nهل تريد جولة افتراضية أو حجز موعد؟",
-		len(props), session.Lead.City, session.Lead.Budget,
-		best.Description, best.Price, best.Bedrooms, best.Bathrooms, best.AreaSqm)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("✨ وجدنا %d عقار رائع في %s يطابق ميزانيتك %.0f$\n\n", len(props), session.Lead.City, session.Lead.Budget))
+
+	for i, p := range props {
+		if i >= 3 {
+			break
+		}
+		b.WriteString(fmt.Sprintf("🏠 العقار %d\n", i+1))
+		b.WriteString(fmt.Sprintf("📍 %s\n", p.Description))
+		b.WriteString(fmt.Sprintf("💰 السعر: %.0f$ | 🛏️ %d غرف | 🛁 %d حمام | 📐 %.0f م²\n\n",
+			p.Price, p.Bedrooms, p.Bathrooms, p.AreaSqm))
+	}
+
+	if len(props) > 3 {
+		b.WriteString(fmt.Sprintf("... و %d عقار إضافي 💫\n\n", len(props)-3))
+	}
+
+	b.WriteString("📞 تبي نتواصل معك ونعطيك تفاصيل أكثر؟\nأو تحب نحجز لك موعد معاينة؟ 🏡")
+	reply := b.String()
 
 	session.State = StateFollowup
 	return reply, nil
 }
 
 func (s *TelegramService) handleFollowup(ctx context.Context, session *UserSession, text string) (string, error) {
-	prompt := `أنت مندوب مبيعات محترف. رد على استفسار العميل بأدب وإقناع.
-الرد يجب أن يكون بالعربية الفصحى، قصير (3 أسطر كحد أقصى)، ومحفز على الحجز أو الاتصال.`
+	prompt := `أنت عمر، مستشار عقاري في كينز العقارية. تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق.
+
+رد على استفسار العميل بأدب وإقناع. كن طبيعياً ولا تكرر نفس العبارات.
+إذا طلب تفاصيل أكثر عن عقار، أعطِ معلومات إضافية مفيدة.
+إذا طلب حجز/زيارة، رحب وأكد على أننا سنتواصل معه.
+لا تطلب رقم هاتف إلا إذا كان العميل مهتم فعلاً.
+رد بـ 3 أسطر كحد أقصى.`
 
 	messages := append(session.Messages, ai.Message{Role: "user", Content: text})
 	resp, err := s.AI.Chat(ctx, append([]ai.Message{{Role: "system", Content: prompt}}, messages...))
 	if err != nil {
-		return "شكراً لتواصلك. سيتصل بك أحد مستشارينا قريباً.", nil
+		return "شكراً لتفاعلك معنا! 💫 سيتواصل معك أحد مستشارينا خلال 24 ساعة. هل هناك شيء آخر أقدر أساعدك فيه الآن؟", nil
 	}
 
 	session.Messages = append(messages, ai.Message{Role: "assistant", Content: resp})
@@ -284,7 +314,7 @@ func (s *TelegramService) handleFollowup(ctx context.Context, session *UserSessi
 }
 
 func (s *TelegramService) fallbackWelcome() string {
-	return "مرحباً بك! 🏡\nأنا مستشارك العقاري.\nللمساعدة، أخبرني بالمدينة والميزانية ونوع العقار المطلوب."
+	return "أهلاً وسهلاً بك في كينز العقارية! 🏡\n\nأنا عمر، مستشارك العقاري. أخبرني في أي مدينة تبحث وما نوع العقار اللي يهمك، وأنا أساعدك بكل سرور."
 }
 
 type extractedData struct {
