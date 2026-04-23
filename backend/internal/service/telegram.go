@@ -104,11 +104,42 @@ func (s *TelegramService) HandleMessage(ctx context.Context, chatID int64, text 
 		Content: text,
 	})
 
+	// Check if user wants to see properties immediately
+	lowerText := strings.ToLower(text)
+	wantsToSee := strings.Contains(lowerText, "وريني") || strings.Contains(lowerText, "اريني") ||
+		strings.Contains(lowerText, "ابغى اشوف") || strings.Contains(lowerText, "أبغى أشوف") ||
+		strings.Contains(lowerText, "عطني") || strings.Contains(lowerText, "اعطني") ||
+		strings.Contains(lowerText, "شوف") || strings.Contains(lowerText, "شوفي") ||
+		strings.Contains(lowerText, "عقارات") || strings.Contains(lowerText, "بيوت") ||
+		strings.Contains(lowerText, "عندكم") || strings.Contains(lowerText, "ابي") ||
+		strings.Contains(lowerText, "أبي") || strings.Contains(lowerText, "ابغى") ||
+		strings.Contains(lowerText, "أبغى") || strings.Contains(lowerText, "حاب") ||
+		strings.Contains(lowerText, "محتاج") || strings.Contains(lowerText, "دور") ||
+		strings.Contains(lowerText, "ابحث")
+
+	if wantsToSee && (session.State == StateWelcome || session.State == StateExtracting) {
+		// Force show properties
+		go s.forceShowProperties(session, chatID)
+		return "⏳ جاري البحث عن أفضل العقارات لك... 🔍", nil
+	}
+
 	// Process AI asynchronously to avoid Telegram webhook timeout (10s)
 	go s.processMessageAsync(session, chatID, text, userName)
 
 	// Return immediate response
 	return "⏳ جاري تحليل طلبك... سأرد عليك خلال ثواني ✨", nil
+}
+
+func (s *TelegramService) forceShowProperties(session *UserSession, chatID int64) {
+	reply, err := s.handleMatching(context.Background(), session)
+	if err == nil && reply != "" {
+		_ = s.ChatRepo.Create(&models.ChatMessage{
+			LeadID:  session.Lead.ID,
+			Role:    "assistant",
+			Content: reply,
+		})
+		_ = s.SendTelegramMessage(chatID, reply)
+	}
 }
 
 func (s *TelegramService) processMessageAsync(session *UserSession, chatID int64, text string, userName string) {
@@ -143,16 +174,15 @@ func (s *TelegramService) processMessageAsync(session *UserSession, chatID int64
 }
 
 func (s *TelegramService) handleWelcome(ctx context.Context, session *UserSession, text string) (string, error) {
-	prompt := `أنت مستشار عقاري محترف في شركة كينز العقارية. اسمك "عمر". تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق للعميل، ليس روبوت.
+	prompt := `أنت مستشار عقاري محترف. تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق للعميل، ليس روبوت.
 
 قواعد مهمة:
 - إذا سأل سؤال مباشر (هل عندكم...؟ كم سعر...؟) أجب عليه مباشرة وباختصار أولاً
-- ثم اسأل سؤال واحد فقط (لا تطلب كل المعلومات دفعة واحدة)
-- لا تطلب رقم الهاتف في الرسالة الأولى أبداً
-- كن طبيعياً وودوداً، استخدم تعبيرات مثل "بالتأكيد" "عظيم" " delighted"
-- اذكر اسم الشركة "كينز العقارية" بشكل طبيعي
-
-مثال: إذا قال "عندكم بيوت في الرياض؟" رد: "نعم بالتأكيد! لدينا تشكيلة ممتازة في الرياض. هل تفضل فيلا أم شقة؟"
+- إذا قال يريد يشوف عقارات، قول له "بالتأكيد! جاري البحث عن أفضل العقارات لك"
+- لا تسأل أسئلة كثيرة، اسأل سؤال واحد فقط
+- لا تطلب رقم الهاتف في البداية
+- لا تذكر اسمك أو اسم الشركة إلا إذا ضروري جداً
+- كن طبيعياً وودوداً
 
 رد بجملتين أو ثلاث كحد أقصى.`
 
@@ -208,7 +238,7 @@ complete=true فقط إذا امتلكت city, budget, property_type, phone.
 		return s.handleScoring(ctx, session)
 	}
 
-	followUpPrompt := `أنت عمر، مستشار عقاري في كينز العقارية. تحدث بالعربية الفصحى المهذبة والودودة.
+	followUpPrompt := `أنت مستشار عقاري محترف. تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق.
 
 المحادثة حتى الآن:
 - المدينة: ` + session.Lead.City + `
@@ -216,8 +246,12 @@ complete=true فقط إذا امتلكت city, budget, property_type, phone.
 - نوع العقار: ` + session.Lead.PropertyType + `
 - التوقيت: ` + session.Lead.Timeline + `
 
-رد بأسلوب طبيعي وودود. لا تكرر ما يعرفه العميل بالفعل. اسأل عن المعلومات الناقصة فقط بأسلوب محادثة (مثل "عظيم! في أي نطاق ميزانية تبحث؟" أو "ممتاز! متى تخطط للشراء تقريباً؟").
-لا تذكر أنك تحلل بيانات. رد بجملة واحدة أو جملتين.`
+قواعد مهمة:
+- إذا العميل يقول "لا" أو يرفض أو يبدو متضايق، لا تكرر نفس السؤال
+- إذا يقول "وريني" أو "أبغى أشوف" أو "عطني" → اعرض العقارات فوراً
+- لا تسأل أسئلة متكررة
+- رد بأسلوب محادثة طبيعية، جملة واحدة أو جملتين
+- لا تذكر اسمك أو اسم الشركة`
 
 	followUp, _ := s.AI.Chat(ctx, []ai.Message{{Role: "user", Content: followUpPrompt}})
 	if followUp == "" {
@@ -295,12 +329,13 @@ func (s *TelegramService) handleMatching(ctx context.Context, session *UserSessi
 }
 
 func (s *TelegramService) handleFollowup(ctx context.Context, session *UserSession, text string) (string, error) {
-	prompt := `أنت عمر، مستشار عقاري في كينز العقارية. تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق.
+	prompt := `أنت مستشار عقاري محترف. تحدث بالعربية الفصحى المهذبة والودودة كأنك صديق.
 
 رد على استفسار العميل بأدب وإقناع. كن طبيعياً ولا تكرر نفس العبارات.
 إذا طلب تفاصيل أكثر عن عقار، أعطِ معلومات إضافية مفيدة.
 إذا طلب حجز/زيارة، رحب وأكد على أننا سنتواصل معه.
 لا تطلب رقم هاتف إلا إذا كان العميل مهتم فعلاً.
+لا تذكر اسمك أو اسم الشركة.
 رد بـ 3 أسطر كحد أقصى.`
 
 	messages := append(session.Messages, ai.Message{Role: "user", Content: text})
@@ -314,7 +349,7 @@ func (s *TelegramService) handleFollowup(ctx context.Context, session *UserSessi
 }
 
 func (s *TelegramService) fallbackWelcome() string {
-	return "أهلاً وسهلاً بك في كينز العقارية! 🏡\n\nأنا عمر، مستشارك العقاري. أخبرني في أي مدينة تبحث وما نوع العقار اللي يهمك، وأنا أساعدك بكل سرور."
+	return "أهلاً وسهلاً بك! 🏡\n\nأخبرني في أي مدينة تبحث وما نوع العقار اللي يهمك، وأنا أساعدك بكل سرور."
 }
 
 type extractedData struct {
