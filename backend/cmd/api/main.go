@@ -62,7 +62,7 @@ func main() {
 	leadRepo := repository.NewLeadRepository(db)
 	propRepo := repository.NewPropertyRepository(db)
 	chatRepo := repository.NewChatRepository(db)
-	telegramSvc := service.NewTelegramService(aiRouter, leadRepo, propRepo, chatRepo)
+	telegramSvc := service.NewTelegramService(aiRouter, leadRepo, propRepo, chatRepo, os.Getenv("TELEGRAM_BOT_TOKEN"))
 	handler := handlers.NewHandler(leadRepo, propRepo, chatRepo, telegramSvc, aiRouter)
 
 	r := gin.Default()

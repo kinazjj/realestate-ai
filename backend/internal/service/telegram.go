@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,18 +40,40 @@ type TelegramService struct {
 	LeadRepo *repository.LeadRepository
 	PropRepo *repository.PropertyRepository
 	ChatRepo *repository.ChatRepository
+	BotToken string
 	sessions map[int64]*UserSession
 	mu       sync.RWMutex
 }
 
-func NewTelegramService(ai *ai.Router, lr *repository.LeadRepository, pr *repository.PropertyRepository, cr *repository.ChatRepository) *TelegramService {
+func NewTelegramService(ai *ai.Router, lr *repository.LeadRepository, pr *repository.PropertyRepository, cr *repository.ChatRepository, botToken string) *TelegramService {
 	return &TelegramService{
 		AI:       ai,
 		LeadRepo: lr,
 		PropRepo: pr,
 		ChatRepo: cr,
+		BotToken: botToken,
 		sessions: make(map[int64]*UserSession),
 	}
+}
+
+func (s *TelegramService) SendTelegramMessage(chatID int64, text string) error {
+	if s.BotToken == "" {
+		return fmt.Errorf("no bot token configured")
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", s.BotToken)
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "HTML",
+	}
+	body, _ := json.Marshal(payload)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
 }
 
 func (s *TelegramService) HandleMessage(ctx context.Context, chatID int64, text string, userName string) (string, error) {
@@ -80,6 +104,16 @@ func (s *TelegramService) HandleMessage(ctx context.Context, chatID int64, text 
 		Content: text,
 	})
 
+	// Process AI asynchronously to avoid Telegram webhook timeout (10s)
+	go s.processMessageAsync(session, chatID, text, userName)
+
+	// Return immediate response
+	return "⏳ جاري تحليل طلبك... سأرد عليك خلال ثواني ✨", nil
+}
+
+func (s *TelegramService) processMessageAsync(session *UserSession, chatID int64, text string, userName string) {
+	ctx := context.Background()
+
 	var reply string
 	var err error
 
@@ -102,9 +136,10 @@ func (s *TelegramService) HandleMessage(ctx context.Context, chatID int64, text 
 			Role:    "assistant",
 			Content: reply,
 		})
+		_ = s.SendTelegramMessage(chatID, reply)
+	} else if err != nil {
+		_ = s.SendTelegramMessage(chatID, "عذراً، حدث خطأ. سأعود لمساعدتك قريباً.")
 	}
-
-	return reply, err
 }
 
 func (s *TelegramService) handleWelcome(ctx context.Context, session *UserSession, text string) (string, error) {

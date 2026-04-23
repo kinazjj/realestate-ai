@@ -81,7 +81,7 @@ func (c *GeminiClient) Chat(ctx context.Context, messages []Message) (string, er
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -89,7 +89,7 @@ func (c *GeminiClient) Chat(ctx context.Context, messages []Message) (string, er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini API error: status %d", resp.StatusCode)
+		return "", fmt.Errorf("gemini API error: %s", resp.Status)
 	}
 
 	var gemResp geminiResponse
@@ -152,7 +152,7 @@ func (c *GroqClient) Chat(ctx context.Context, messages []Message) (string, erro
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

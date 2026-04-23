@@ -5,11 +5,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"realestate-ai/backend/internal/models"
 	"realestate-ai/backend/internal/pkg/ai"
 	"realestate-ai/backend/internal/repository"
 	"realestate-ai/backend/internal/service"
+
+	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
@@ -41,6 +42,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.GET("/leads/:id", h.GetLead)
 		api.GET("/leads/:id/messages", h.GetLeadMessages)
 		api.GET("/stats", h.GetStats)
+		api.POST("/test-ai", h.TestAI)
 
 		api.GET("/properties", h.ListProperties)
 		api.GET("/properties/:id", h.GetProperty)
@@ -166,15 +168,36 @@ func (h *Handler) DeleteProperty(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+func (h *Handler) TestAI(c *gin.Context) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	start := time.Now()
+	resp, err := h.AIRouter.Chat(c.Request.Context(), []ai.Message{{Role: "user", Content: req.Message}})
+	duration := time.Since(start)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "duration": duration.String()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"response": resp, "duration": duration.String()})
+}
+
 func (h *Handler) Webhook(c *gin.Context) {
 	var payload struct {
 		Message struct {
 			Chat struct {
 				ID int64 `json:"id"`
 			} `json:"chat"`
-			Text     string `json:"text"`
-			From     struct {
-				Username string `json:"username"`
+			Text string `json:"text"`
+			From struct {
+				Username  string `json:"username"`
 				FirstName string `json:"first_name"`
 			} `json:"from"`
 		} `json:"message"`
